@@ -1,22 +1,36 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import pdfplumber
 import io
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import chromadb
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import uuid
 import random
 import os
 from dotenv import load_dotenv
-from gpt_model import (
-    get_embeddings, 
-    generate_chat_response, 
-    generate_tutor_question, 
-    evaluate_tutor_answer,
+from embeddings import get_embeddings
+from chat_model import (
+    generate_chat_response,
     is_greeting_message,
     get_greeting_response
+)
+from tutor_model import (
+    generate_tutor_question,
+    evaluate_tutor_answer
+)
+from conversational_tutor import (
+    get_tutor_response,
+    evaluate_student_answer,
+    generate_practice_question,
+    reset_session,
+    get_session_progress
+)
+from voice_models import (
+    speech_to_text_from_bytes,
+    text_to_speech
 )
 
 app = FastAPI(title="Document Tutor + Chatbot API")
@@ -63,6 +77,15 @@ def ensure_clean_start():
 
 class ChatRequest(BaseModel):
     message: str
+
+class VoiceRequest(BaseModel):
+    message: str
+    mode: str  # "chat" or "tutor"
+
+class VoiceResponse(BaseModel):
+    response: str
+    audio_text: str
+    sources: Optional[List[str]] = None
 
 class TutorAnswerRequest(BaseModel):
     question: str
@@ -312,7 +335,7 @@ async def get_tutor_question():
         raise HTTPException(status_code=500, detail=f"Error generating question: {str(e)}")
 
 @app.post("/tutor/evaluate", response_model=TutorEvaluation)
-async def evaluate_tutor_answer(request: TutorAnswerRequest):
+async def evaluate_tutor_answer_endpoint(request: TutorAnswerRequest):
     """Evaluate user's answer in tutor mode"""
     # Check if document is uploaded and embeddings are ready
     if not document_text or not collection:
@@ -394,6 +417,212 @@ async def get_document_status():
         "collection_exists": collection is not None,
         "has_embeddings": collection.count() if collection else 0
     }
+
+@app.post("/voice/chat", response_model=VoiceResponse)
+async def voice_chat(request: VoiceRequest):
+    """Voice mode - chat with document using voice input"""
+    # Check if document is uploaded
+    if not document_text or not collection:
+        raise HTTPException(
+            status_code=400,
+            detail="No document uploaded. Please upload a PDF or TXT file first!"
+        )
+    
+    try:
+        # Check if it's a greeting
+        if is_greeting_message(request.message):
+            response_text = get_greeting_response(request.message)
+            return VoiceResponse(
+                response=response_text,
+                audio_text=response_text,
+                sources=[]
+            )
+        
+        # Retrieve relevant chunks
+        relevant_chunks = await retrieve_relevant_chunks(request.message, k=3)
+        
+        if not relevant_chunks:
+            response_text = "I couldn't find relevant information in the document to answer your question."
+            return VoiceResponse(
+                response=response_text,
+                audio_text=response_text,
+                sources=[]
+            )
+        
+        # Generate response
+        context = " ".join(relevant_chunks)
+        response_text = await generate_chat_response(request.message, context)
+        
+        return VoiceResponse(
+            response=response_text,
+            audio_text=response_text,
+            sources=relevant_chunks[:2]
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing voice chat: {str(e)}")
+
+@app.get("/voice/tutor/question")
+async def voice_tutor_question():
+    """Voice mode - get a tutor question"""
+    # Check if document is uploaded
+    if not document_text or not collection:
+        raise HTTPException(
+            status_code=400,
+            detail="No document uploaded. Please upload a PDF or TXT file first!"
+        )
+    
+    try:
+        question = await generate_question_from_document()
+        return {
+            "question": question,
+            "audio_text": question
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating question: {str(e)}")
+
+@app.post("/voice/tutor/evaluate")
+async def voice_tutor_evaluate(request: TutorAnswerRequest):
+    """Voice mode - evaluate tutor answer"""
+    # Check if document is uploaded
+    if not document_text or not collection:
+        raise HTTPException(
+            status_code=400,
+            detail="No document uploaded. Please upload a PDF or TXT file first!"
+        )
+    
+    try:
+        evaluation = await evaluate_answer(request.question, request.user_answer, document_text)
+        
+        # Create a voice-friendly response
+        audio_text = f"You scored {evaluation.score} out of 10. "
+        if evaluation.correct_points:
+            audio_text += f"Good job on: {'. '.join(evaluation.correct_points)}. "
+        if evaluation.missing_points:
+            audio_text += f"You could improve: {'. '.join(evaluation.missing_points)}. "
+        if evaluation.improved_answer:
+            audio_text += f"Here's a better answer: {evaluation.improved_answer}"
+        
+        return {
+            "score": evaluation.score,
+            "correct_points": evaluation.correct_points,
+            "missing_points": evaluation.missing_points,
+            "improved_answer": evaluation.improved_answer,
+            "audio_text": audio_text
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error evaluating answer: {str(e)}")
+
+# Conversational Tutor Endpoints
+@app.post("/conversational/chat")
+async def conversational_chat(request: dict):
+    """Conversational tutor - general chat"""
+    try:
+        session_id = request.get("session_id", "default")
+        message = request.get("message", "")
+        
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required")
+        
+        result = await get_tutor_response(session_id, message)
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.post("/conversational/evaluate")
+async def conversational_evaluate(request: dict):
+    """Conversational tutor - evaluate answer"""
+    try:
+        session_id = request.get("session_id", "default")
+        question = request.get("question", "")
+        answer = request.get("answer", "")
+        
+        if not question or not answer:
+            raise HTTPException(status_code=400, detail="Question and answer are required")
+        
+        result = await evaluate_student_answer(session_id, question, answer)
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.post("/conversational/question")
+async def conversational_question(request: dict):
+    """Conversational tutor - generate practice question"""
+    try:
+        session_id = request.get("session_id", "default")
+        topic = request.get("topic", None)
+        
+        result = await generate_practice_question(session_id, topic)
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.get("/conversational/progress/{session_id}")
+async def conversational_progress(session_id: str):
+    """Get conversational tutor progress"""
+    try:
+        progress = get_session_progress(session_id)
+        return progress
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.post("/conversational/reset")
+async def conversational_reset(request: dict):
+    """Reset conversational tutor session"""
+    try:
+        session_id = request.get("session_id", "default")
+        result = reset_session(session_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+# Voice Processing Endpoints
+@app.post("/voice/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Transcribe audio to text using Whisper Large V3"""
+    try:
+        # Read audio file
+        audio_bytes = await audio.read()
+        
+        # Transcribe using Whisper
+        text = await speech_to_text_from_bytes(audio_bytes, audio.filename)
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Could not transcribe audio")
+        
+        return {"text": text}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+@app.post("/voice/synthesize")
+async def synthesize_speech(request: dict):
+    """Convert text to speech using Orpheus V1 English"""
+    try:
+        text = request.get("text", "")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        # Generate speech
+        audio_bytes = await text_to_speech(text)
+        
+        if not audio_bytes:
+            # Return empty response if TTS not available (browser will handle it)
+            return {"audio": None, "message": "TTS not available, use browser TTS"}
+        
+        # Return audio as base64
+        import base64
+        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+        
+        return {"audio": audio_base64, "format": "mp3"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
