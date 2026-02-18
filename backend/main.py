@@ -6,7 +6,6 @@ import pdfplumber
 import io
 from typing import List, Dict, Any, Optional
 import chromadb
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 import uuid
 import random
 import os
@@ -123,23 +122,29 @@ def extract_text_from_pdf(file_content: bytes) -> str:
 
 def chunk_document(text: str) -> List[Dict[str, Any]]:
     """Split document into chunks for RAG"""
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
-        length_function=len,
-    )
+    # Simple text splitter without langchain dependency
+    chunk_size = 500
+    chunk_overlap = 50
     
-    chunks = text_splitter.split_text(text)
+    chunks = []
+    start = 0
+    text_length = len(text)
+    chunk_index = 0
     
-    chunk_objects = []
-    for i, chunk in enumerate(chunks):
-        chunk_objects.append({
+    while start < text_length:
+        end = start + chunk_size
+        chunk_text = text[start:end]
+        
+        chunks.append({
             "id": str(uuid.uuid4()),
-            "text": chunk,
-            "chunk_index": i
+            "text": chunk_text,
+            "chunk_index": chunk_index
         })
+        
+        chunk_index += 1
+        start += chunk_size - chunk_overlap
     
-    return chunk_objects
+    return chunks
 
 async def setup_vector_db(chunks: List[Dict[str, Any]]):
     """Setup ChromaDB with document chunks using OpenAI embeddings"""
