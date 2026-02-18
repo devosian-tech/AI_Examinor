@@ -38,10 +38,10 @@ app = FastAPI(title="Document Tutor + Chatbot API")
 # Load environment variables
 load_dotenv()
 
-# CORS middleware
+# CORS middleware - Allow all origins for production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Added common dev ports
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
