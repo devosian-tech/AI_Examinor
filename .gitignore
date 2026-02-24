@@ -16,9 +16,6 @@ build/
 *.env
 !.env.example
 
-# ChromaDB
-backend/chroma_db/
-
 # Node.js
 node_modules/
 npm-debug.log*

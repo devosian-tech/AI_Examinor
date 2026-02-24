@@ -5,9 +5,10 @@ A full-stack application that provides both tutoring and chatbot functionality b
 ## Features
 
 - **Document Upload**: Support for PDF and TXT files
-- **Chat Mode**: RAG-based chatbot using only document content
+- **Chat Mode**: RAG-based chatbot using only document content with chat history
 - **Tutor Mode**: Interactive Q&A with scoring and feedback
-- **Vector Search**: Efficient document chunk retrieval using ChromaDB
+- **Vector Search**: Efficient document chunk retrieval using MongoDB Atlas
+- **Chat History**: Persistent conversation history like ChatGPT
 - **AI-Powered**: Uses GPT-OSS-20B via Groq API
 
 ## Technology Stack
@@ -16,8 +17,8 @@ A full-stack application that provides both tutoring and chatbot functionality b
 - FastAPI - REST API framework
 - pdfplumber - PDF text extraction
 - sentence-transformers - Text embeddings
-- chromadb - Vector database
-- langchain - Text processing utilities
+- pymongo - MongoDB driver for vector storage
+- MongoDB Atlas - Cloud database for embeddings and chat history
 - Groq API - GPT-OSS-20B model access
 
 ### Frontend
@@ -30,6 +31,7 @@ A full-stack application that provides both tutoring and chatbot functionality b
 - Python 3.8+
 - Node.js 16+
 - Groq API key ([Get one here](https://console.groq.com))
+- MongoDB Atlas account ([Sign up free](https://www.mongodb.com/cloud/atlas/register))
 
 ## Installation
 
@@ -50,7 +52,9 @@ pip install -r requirements.txt
 ### 3. Configure Environment Variables
 ```bash
 cp .env.example .env
-# Edit .env and add your GROQ_API_KEY
+# Edit .env and add:
+# - GROQ_API_KEY (from Groq Console)
+# - MONGODB_URI (from MongoDB Atlas)
 ```
 
 ### 4. Frontend Setup
@@ -91,10 +95,10 @@ Visit http://localhost:5173 to use the application.
 
 1. Upload a PDF or TXT document
 2. Choose between:
-   - **Chat Mode**: Ask questions about the document
+   - **Chat Mode**: Ask questions about the document (with persistent chat history)
    - **Tutor Mode**: Answer questions generated from the document
 
-The system only uses information from your uploaded document - no external knowledge is used.
+The system only uses information from your uploaded document - no external knowledge is used. Chat history is saved in MongoDB for future reference.
 
 ## Project Structure
 
@@ -116,11 +120,25 @@ The system only uses information from your uploaded document - no external knowl
 
 ## API Endpoints
 
+### Document Management
 - `POST /upload` - Upload and process documents
-- `POST /chat` - Chat with document content
-- `POST /tutor/question` - Generate tutor questions
+- `POST /clear` - Clear all data
+- `GET /document/status` - Get document status
+
+### Chat (with history)
+- `POST /chat/session/create` - Create new chat session
+- `POST /chat/session/{session_id}/message` - Send message
+- `GET /chat/session/{session_id}/history` - Get chat history
+- `GET /chat/sessions` - List all sessions
+- `DELETE /chat/session/{session_id}` - Delete session
+
+### Tutor Mode
+- `GET /tutor/question` - Generate tutor questions
 - `POST /tutor/evaluate` - Evaluate tutor answers
+
+### System
 - `POST /session/start` - Initialize new session
+- `GET /health` - Health check with MongoDB status
 
 ## Contributing
 
@@ -134,5 +152,5 @@ The system only uses information from your uploaded document - no external knowl
 ## Acknowledgments
 
 - Built with [Groq](https://groq.com) for fast AI inference
-- Uses [ChromaDB](https://www.trychroma.com/) for vector storage
+- Uses [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) for vector storage and chat history
 - Powered by [FastAPI](https://fastapi.tiangolo.com/) and [React](https://react.dev/)

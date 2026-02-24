@@ -5,12 +5,25 @@ from pydantic import BaseModel
 import pdfplumber
 import io
 from typing import List, Dict, Any, Optional
-import chromadb
 import uuid
 import random
 import os
+import chromadb
 from dotenv import load_dotenv
 from embeddings import get_embeddings
+from mongodb_client import (
+    connect_mongodb,
+    store_document_metadata,
+    store_embeddings,
+    search_similar_chunks,
+    create_chat_session,
+    add_message_to_session,
+    get_chat_history,
+    get_all_sessions,
+    delete_session,
+    clear_all_data,
+    use_mongodb
+)
 from chat_model import (
     generate_chat_response,
     is_greeting_message,
@@ -37,6 +50,10 @@ app = FastAPI(title="Document Tutor + Chatbot API")
 # Load environment variables
 load_dotenv()
 
+# ChromaDB fallback
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+chroma_collection = None
+
 # CORS middleware - Allow all origins for production
 app.add_middleware(
     CORSMiddleware,
@@ -47,32 +64,27 @@ app.add_middleware(
 )
 
 # Global variables
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = None
 document_text = ""
 document_chunks = []
+current_document_id = None
 
 def ensure_clean_start():
     """Ensure we start with a clean database on server startup"""
-    global collection
+    global current_document_id, chroma_collection
     
     try:
-        # Clear any existing collections on startup for fresh start
-        existing_collections = chroma_client.list_collections()
-        if existing_collections:
-            for col in existing_collections:
-                chroma_client.delete_collection(col.name)
-                print(f"Startup cleanup: Deleted collection '{col.name}'")
-            print("Startup: All previous collections cleared - ready for new document")
-        else:
-            print("Startup: No existing collections - ready for new document")
+        # Try to connect to MongoDB
+        connect_mongodb()
         
-        # Reset collection variable
-        collection = None
+        # Reset document ID
+        current_document_id = None
+        chroma_collection = None
+        
+        print("Startup: Ready for new document")
         
     except Exception as e:
-        print(f"Startup cleanup error: {e}")
-        collection = None
+        print(f"Startup error: {e}")
+        current_document_id = None
 
 class ChatRequest(BaseModel):
     message: str
@@ -146,53 +158,62 @@ def chunk_document(text: str) -> List[Dict[str, Any]]:
     
     return chunks
 
-async def setup_vector_db(chunks: List[Dict[str, Any]]):
-    """Setup ChromaDB with document chunks using OpenAI embeddings"""
-    global collection
+async def setup_vector_db(document_id: str, chunks: List[Dict[str, Any]]):
+    """Setup vector database (MongoDB or ChromaDB) with document chunks"""
+    global chroma_collection
+    from mongodb_client import use_mongodb as mongo_connected
     
-    # Delete existing collection if it exists (clear previous document)
-    try:
-        chroma_client.delete_collection("documents")
-        print("Cleared previous document embeddings from persistent storage")
-    except Exception as e:
-        print(f"No previous collection to clear: {e}")
-    
-    # Force reset the collection variable
-    collection = None
-    
-    # Create new collection for the new document
-    collection = chroma_client.create_collection(
-        name="documents",
-        metadata={"description": "Current document embeddings"}
-    )
-    
-    # Generate embeddings using OpenAI and add to collection
+    # Generate embeddings using OpenAI
     print(f"Generating embeddings for {len(chunks)} chunks...")
     texts = [chunk["text"] for chunk in chunks]
     embeddings = await get_embeddings(texts)
     
-    collection.add(
-        embeddings=embeddings,
-        documents=texts,
-        ids=[chunk["id"] for chunk in chunks]
-    )
+    if mongo_connected:
+        # Store embeddings in MongoDB
+        count = store_embeddings(document_id, chunks, embeddings)
+        print(f"✅ {count} embeddings stored in MongoDB")
+    else:
+        # Use ChromaDB fallback
+        try:
+            chroma_client.delete_collection("documents")
+        except:
+            pass
+        
+        chroma_collection = chroma_client.create_collection(
+            name="documents",
+            metadata={"description": "Current document embeddings"}
+        )
+        
+        chroma_collection.add(
+            embeddings=embeddings,
+            documents=texts,
+            ids=[chunk["id"] for chunk in chunks]
+        )
+        print(f"✅ {len(chunks)} embeddings stored in ChromaDB")
     
-    print(f"New embeddings created and saved to ./chroma_db/ folder")
-    print(f"Collection 'documents' now contains {len(chunks)} chunks")
+    return len(chunks)
 
-async def retrieve_relevant_chunks(query: str, k: int = 3) -> List[str]:
-    """Retrieve top-k relevant chunks for a query using OpenAI embeddings"""
-    if not collection:
-        return []
+async def retrieve_relevant_chunks(query: str, document_id: str, k: int = 3) -> List[str]:
+    """Retrieve top-k relevant chunks for a query"""
+    global chroma_collection
+    from mongodb_client import use_mongodb as mongo_connected
     
-    query_embeddings = await get_embeddings([query])
-    
-    results = collection.query(
-        query_embeddings=query_embeddings,
-        n_results=k
-    )
-    
-    return results["documents"][0] if results["documents"] else []
+    if mongo_connected:
+        # Use MongoDB search
+        query_embeddings = await get_embeddings([query])
+        results = search_similar_chunks(query_embeddings[0], document_id, k)
+        return results
+    else:
+        # Use ChromaDB fallback
+        if not chroma_collection:
+            return []
+        
+        query_embeddings = await get_embeddings([query])
+        results = chroma_collection.query(
+            query_embeddings=query_embeddings,
+            n_results=k
+        )
+        return results["documents"][0] if results["documents"] else []
 
 async def generate_question_from_document() -> str:
     """Generate a question based on document content using GPT"""
@@ -205,10 +226,10 @@ async def generate_question_from_document() -> str:
     
     return await generate_tutor_question(chunk_text)
 
-async def evaluate_answer(question: str, user_answer: str, document_context: str) -> TutorEvaluation:
+async def evaluate_answer(question: str, user_answer: str, document_id: str) -> TutorEvaluation:
     """Evaluate user answer against document content using GPT"""
     # Retrieve relevant chunks for the question
-    relevant_chunks = await retrieve_relevant_chunks(question, k=5)
+    relevant_chunks = await retrieve_relevant_chunks(question, document_id, k=5)
     context = " ".join(relevant_chunks)
     
     # Get evaluation from GPT model
@@ -224,7 +245,7 @@ async def evaluate_answer(question: str, user_answer: str, document_context: str
 @app.post("/upload", response_model=DocumentResponse)
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process document (PDF or TXT) - Creates embeddings for chat/tutor use"""
-    global document_text, document_chunks, collection
+    global document_text, document_chunks, current_document_id
     
     try:
         print(f"📄 Starting document upload: {file.filename}")
@@ -232,16 +253,7 @@ async def upload_document(file: UploadFile = File(...)):
         # Step 1: Clear ALL previous document data
         document_text = ""
         document_chunks = []
-        collection = None
-        
-        # Clear any existing collections from persistent storage
-        try:
-            existing_collections = chroma_client.list_collections()
-            for col in existing_collections:
-                chroma_client.delete_collection(col.name)
-                print(f"🗑️ Cleared previous collection: {col.name}")
-        except Exception as e:
-            print(f"ℹ️ No previous collections to clear: {e}")
+        current_document_id = None
         
         # Step 2: Read and extract text from uploaded file
         content = await file.read()
@@ -258,13 +270,18 @@ async def upload_document(file: UploadFile = File(...)):
         if not document_text.strip():
             raise HTTPException(status_code=400, detail="No text could be extracted from the document")
         
-        # Step 3: Chunk the document for processing
+        # Step 3: Generate document ID and store metadata
+        current_document_id = str(uuid.uuid4())
+        store_document_metadata(current_document_id, file.filename, len(content), document_text)
+        print(f"📝 Document metadata stored with ID: {current_document_id}")
+        
+        # Step 4: Chunk the document for processing
         document_chunks = chunk_document(document_text)
         print(f"✂️ Document chunked into {len(document_chunks)} pieces")
         
-        # Step 4: Create embeddings and store in vector database
+        # Step 5: Create embeddings and store in MongoDB
         print("🔄 Creating embeddings... (this may take a moment)")
-        await setup_vector_db(document_chunks)
+        await setup_vector_db(current_document_id, document_chunks)
         
         print(f"✅ Document '{file.filename}' processed successfully!")
         print(f"📊 Ready for chat and tutor modes with {len(document_chunks)} chunks")
@@ -280,14 +297,14 @@ async def upload_document(file: UploadFile = File(...)):
         print(f"❌ Error processing document: {str(e)}")
         document_text = ""
         document_chunks = []
-        collection = None
+        current_document_id = None
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_document(request: ChatRequest):
     """Chat mode - answer questions using document content and GPT"""
     # Check if document is uploaded and embeddings are ready
-    if not document_text or not collection:
+    if not document_text or not current_document_id:
         raise HTTPException(
             status_code=400, 
             detail="No document uploaded. Please upload a PDF or TXT file first to start chatting!"
@@ -302,7 +319,7 @@ async def chat_with_document(request: ChatRequest):
             )
         
         # Retrieve relevant chunks for actual questions
-        relevant_chunks = await retrieve_relevant_chunks(request.message, k=3)
+        relevant_chunks = await retrieve_relevant_chunks(request.message, current_document_id, k=3)
         
         if not relevant_chunks:
             return ChatResponse(
@@ -322,11 +339,90 @@ async def chat_with_document(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat request: {str(e)}")
 
+# Chat History Endpoints
+@app.post("/chat/session/create")
+async def create_new_chat_session():
+    """Create a new chat session"""
+    if not current_document_id:
+        raise HTTPException(status_code=400, detail="No document uploaded")
+    
+    try:
+        session_id = create_chat_session(current_document_id)
+        return {"session_id": session_id, "document_id": current_document_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating session: {str(e)}")
+
+@app.post("/chat/session/{session_id}/message")
+async def send_chat_message(session_id: str, request: ChatRequest):
+    """Send a message in a chat session and get response"""
+    if not document_text or not current_document_id:
+        raise HTTPException(status_code=400, detail="No document uploaded")
+    
+    try:
+        # Store user message
+        add_message_to_session(session_id, "user", request.message)
+        
+        # Check if it's a greeting
+        if is_greeting_message(request.message):
+            response_text = get_greeting_response(request.message)
+            add_message_to_session(session_id, "assistant", response_text)
+            return ChatResponse(response=response_text, sources=[])
+        
+        # Retrieve relevant chunks
+        relevant_chunks = await retrieve_relevant_chunks(request.message, current_document_id, k=3)
+        
+        if not relevant_chunks:
+            response_text = "I couldn't find relevant information in the document to answer your question."
+            add_message_to_session(session_id, "assistant", response_text)
+            return ChatResponse(response=response_text, sources=[])
+        
+        # Generate response
+        context = " ".join(relevant_chunks)
+        response_text = await generate_chat_response(request.message, context)
+        
+        # Store assistant response with sources
+        add_message_to_session(session_id, "assistant", response_text, relevant_chunks[:2])
+        
+        return ChatResponse(response=response_text, sources=relevant_chunks[:2])
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing message: {str(e)}")
+
+@app.get("/chat/session/{session_id}/history")
+async def get_session_history(session_id: str):
+    """Get chat history for a session"""
+    try:
+        history = get_chat_history(session_id)
+        return {"session_id": session_id, "messages": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting history: {str(e)}")
+
+@app.get("/chat/sessions")
+async def get_chat_sessions():
+    """Get all chat sessions for current document"""
+    if not current_document_id:
+        raise HTTPException(status_code=400, detail="No document uploaded")
+    
+    try:
+        sessions = get_all_sessions(current_document_id)
+        return {"document_id": current_document_id, "sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting sessions: {str(e)}")
+
+@app.delete("/chat/session/{session_id}")
+async def delete_chat_session(session_id: str):
+    """Delete a chat session"""
+    try:
+        delete_session(session_id)
+        return {"success": True, "message": "Session deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting session: {str(e)}")
+
 @app.get("/tutor/question", response_model=TutorQuestion)
 async def get_tutor_question():
     """Get a question for tutor mode"""
     # Check if document is uploaded and embeddings are ready
-    if not document_text or not collection:
+    if not document_text or not current_document_id:
         raise HTTPException(
             status_code=400, 
             detail="No document uploaded. Please upload a PDF or TXT file first to start tutor mode!"
@@ -343,14 +439,14 @@ async def get_tutor_question():
 async def evaluate_tutor_answer_endpoint(request: TutorAnswerRequest):
     """Evaluate user's answer in tutor mode"""
     # Check if document is uploaded and embeddings are ready
-    if not document_text or not collection:
+    if not document_text or not current_document_id:
         raise HTTPException(
             status_code=400, 
             detail="No document uploaded. Please upload a PDF or TXT file first to use tutor mode!"
         )
     
     try:
-        evaluation = await evaluate_answer(request.question, request.user_answer, document_text)
+        evaluation = await evaluate_answer(request.question, request.user_answer, current_document_id)
         return evaluation
         
     except Exception as e:
@@ -359,22 +455,16 @@ async def evaluate_tutor_answer_endpoint(request: TutorAnswerRequest):
 @app.post("/session/start")
 async def start_new_session():
     """Start a new session - clear all previous document data"""
-    global document_text, document_chunks, collection
+    global document_text, document_chunks, current_document_id
     
     try:
         # Clear all memory variables
         document_text = ""
         document_chunks = []
-        collection = None
+        current_document_id = None
         
-        # Clear all existing collections from persistent storage
-        try:
-            existing_collections = chroma_client.list_collections()
-            for col in existing_collections:
-                chroma_client.delete_collection(col.name)
-                print(f"Session start: Deleted collection '{col.name}'")
-        except Exception as e:
-            print(f"Session start: No existing collections to clear - {e}")
+        # Clear MongoDB data
+        clear_all_data()
         
         print("New session started - all previous data cleared")
         
@@ -393,23 +483,18 @@ async def start_new_session():
 @app.post("/clear")
 async def clear_document():
     """Clear current document and embeddings"""
-    global document_text, document_chunks, collection
+    global document_text, document_chunks, current_document_id
     
     try:
         # Clear all document data
         document_text = ""
         document_chunks = []
+        current_document_id = None
         
-        # Clear ChromaDB collection (persistent storage)
-        try:
-            chroma_client.delete_collection("documents")
-            print("Deleted collection from persistent storage")
-        except Exception as e:
-            print(f"No collection to delete: {e}")
+        # Clear MongoDB data
+        clear_all_data()
         
-        collection = None
-        
-        return {"success": True, "message": "All document data cleared from memory and persistent storage"}
+        return {"success": True, "message": "All document data cleared from memory and MongoDB"}
     except Exception as e:
         return {"success": False, "message": f"Error clearing data: {str(e)}"}
 
@@ -419,15 +504,15 @@ async def get_document_status():
     return {
         "document_loaded": bool(document_text),
         "chunks_count": len(document_chunks) if document_chunks else 0,
-        "collection_exists": collection is not None,
-        "has_embeddings": collection.count() if collection else 0
+        "document_id": current_document_id,
+        "has_embeddings": current_document_id is not None
     }
 
 @app.post("/voice/chat", response_model=VoiceResponse)
 async def voice_chat(request: VoiceRequest):
     """Voice mode - chat with document using voice input"""
     # Check if document is uploaded
-    if not document_text or not collection:
+    if not document_text or not current_document_id:
         raise HTTPException(
             status_code=400,
             detail="No document uploaded. Please upload a PDF or TXT file first!"
@@ -444,7 +529,7 @@ async def voice_chat(request: VoiceRequest):
             )
         
         # Retrieve relevant chunks
-        relevant_chunks = await retrieve_relevant_chunks(request.message, k=3)
+        relevant_chunks = await retrieve_relevant_chunks(request.message, current_document_id, k=3)
         
         if not relevant_chunks:
             response_text = "I couldn't find relevant information in the document to answer your question."
@@ -471,7 +556,7 @@ async def voice_chat(request: VoiceRequest):
 async def voice_tutor_question():
     """Voice mode - get a tutor question"""
     # Check if document is uploaded
-    if not document_text or not collection:
+    if not document_text or not current_document_id:
         raise HTTPException(
             status_code=400,
             detail="No document uploaded. Please upload a PDF or TXT file first!"
@@ -490,14 +575,14 @@ async def voice_tutor_question():
 async def voice_tutor_evaluate(request: TutorAnswerRequest):
     """Voice mode - evaluate tutor answer"""
     # Check if document is uploaded
-    if not document_text or not collection:
+    if not document_text or not current_document_id:
         raise HTTPException(
             status_code=400,
             detail="No document uploaded. Please upload a PDF or TXT file first!"
         )
     
     try:
-        evaluation = await evaluate_answer(request.question, request.user_answer, document_text)
+        evaluation = await evaluate_answer(request.question, request.user_answer, current_document_id)
         
         # Create a voice-friendly response
         audio_text = f"You scored {evaluation.score} out of 10. "
@@ -632,30 +717,23 @@ async def synthesize_speech(request: dict):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    import os
+    from mongodb_client import get_db
     
-    # Check if chroma_db folder exists
-    chroma_db_exists = os.path.exists("./chroma_db")
-    chroma_db_size = 0
-    
-    if chroma_db_exists:
-        # Calculate folder size
-        for dirpath, dirnames, filenames in os.walk("./chroma_db"):
-            for filename in filenames:
-                filepath = os.path.join(dirpath, filename)
-                chroma_db_size += os.path.getsize(filepath)
+    # Check MongoDB connection
+    mongodb_connected = False
+    try:
+        db = get_db()
+        if db is not None:
+            mongodb_connected = True
+    except:
+        pass
     
     return {
         "status": "healthy",
         "document_loaded": bool(document_text),
         "chunks_count": len(document_chunks) if document_chunks else 0,
-        "collection_exists": collection is not None,
-        "persistent_storage": {
-            "enabled": True,
-            "folder_exists": chroma_db_exists,
-            "folder_size_bytes": chroma_db_size,
-            "folder_path": "./chroma_db"
-        }
+        "document_id": current_document_id,
+        "mongodb_connected": mongodb_connected
     }
 
 if __name__ == "__main__":

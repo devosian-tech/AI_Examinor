@@ -75,3 +75,11 @@
     mask-composite: exclude;
   }
 }
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply font-sans bg-white text-gray-900;
+}

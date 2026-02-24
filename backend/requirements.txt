@@ -9,3 +9,7 @@ requests
 sentence-transformers==2.2.2
 edge-tts==6.1.9
 SpeechRecognition==3.10.0
+pymongo[srv]>=4.6.0
+certifi
+pyopenssl>=23.0.0
+cryptography>=41.0.0
