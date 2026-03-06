@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,7 +8,6 @@ from typing import List, Dict, Any, Optional
 import uuid
 import random
 import os
-import chromadb
 from dotenv import load_dotenv
 from embeddings import get_embeddings
 from mongodb_client import (
@@ -22,7 +21,10 @@ from mongodb_client import (
     get_all_sessions,
     delete_session,
     clear_all_data,
-    use_mongodb
+    use_mongodb,
+    create_user,
+    authenticate_user,
+    get_user_by_id
 )
 from chat_model import (
     generate_chat_response,
@@ -50,10 +52,6 @@ app = FastAPI(title="Document Tutor + Chatbot API")
 # Load environment variables
 load_dotenv()
 
-# ChromaDB fallback
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-chroma_collection = None
-
 # CORS middleware - Allow all origins for production
 app.add_middleware(
     CORSMiddleware,
@@ -63,6 +61,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Run on server startup"""
+    print("\n" + "="*60)
+    print("🚀 Starting Document Tutor API Server")
+    print("="*60)
+    ensure_clean_start()
+    print("="*60 + "\n")
+
 # Global variables
 document_text = ""
 document_chunks = []
@@ -70,20 +78,28 @@ current_document_id = None
 
 def ensure_clean_start():
     """Ensure we start with a clean database on server startup"""
-    global current_document_id, chroma_collection
+    global current_document_id
     
     try:
-        # Try to connect to MongoDB
-        connect_mongodb()
+        # Connect to MongoDB (required)
+        print("🔄 Attempting to connect to MongoDB...")
+        connection_result = connect_mongodb()
+        
+        if not connection_result:
+            print("⚠️ WARNING: MongoDB connection failed during startup")
+            print("⚠️ Server will start but features will be limited")
+            # Don't raise exception - let server start
+        else:
+            print("✅ MongoDB connected - all features available")
         
         # Reset document ID
         current_document_id = None
-        chroma_collection = None
         
         print("Startup: Ready for new document")
         
     except Exception as e:
-        print(f"Startup error: {e}")
+        print(f"⚠️ Startup warning: {e}")
+        print("⚠️ Server starting with limited functionality")
         current_document_id = None
 
 class ChatRequest(BaseModel):
@@ -119,6 +135,22 @@ class TutorEvaluation(BaseModel):
     correct_points: List[str]
     missing_points: List[str]
     improved_answer: str
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    first_name: str
+    last_name: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class UserResponse(BaseModel):
+    user_id: str
+    email: str
+    first_name: str
+    last_name: str
 
 import hashlib
 
@@ -159,61 +191,34 @@ def chunk_document(text: str) -> List[Dict[str, Any]]:
     return chunks
 
 async def setup_vector_db(document_id: str, chunks: List[Dict[str, Any]]):
-    """Setup vector database (MongoDB or ChromaDB) with document chunks"""
-    global chroma_collection
+    """Setup vector database in MongoDB with document chunks"""
     from mongodb_client import use_mongodb as mongo_connected
     
-    # Generate embeddings using OpenAI
+    if not mongo_connected:
+        raise Exception("MongoDB connection required for storing embeddings")
+    
+    # Generate embeddings
     print(f"Generating embeddings for {len(chunks)} chunks...")
     texts = [chunk["text"] for chunk in chunks]
     embeddings = await get_embeddings(texts)
     
-    if mongo_connected:
-        # Store embeddings in MongoDB
-        count = store_embeddings(document_id, chunks, embeddings)
-        print(f"✅ {count} embeddings stored in MongoDB")
-    else:
-        # Use ChromaDB fallback
-        try:
-            chroma_client.delete_collection("documents")
-        except:
-            pass
-        
-        chroma_collection = chroma_client.create_collection(
-            name="documents",
-            metadata={"description": "Current document embeddings"}
-        )
-        
-        chroma_collection.add(
-            embeddings=embeddings,
-            documents=texts,
-            ids=[chunk["id"] for chunk in chunks]
-        )
-        print(f"✅ {len(chunks)} embeddings stored in ChromaDB")
+    # Store embeddings in MongoDB
+    count = store_embeddings(document_id, chunks, embeddings)
+    print(f"✅ {count} embeddings stored in MongoDB")
     
     return len(chunks)
 
 async def retrieve_relevant_chunks(query: str, document_id: str, k: int = 3) -> List[str]:
-    """Retrieve top-k relevant chunks for a query"""
-    global chroma_collection
+    """Retrieve top-k relevant chunks for a query from MongoDB"""
     from mongodb_client import use_mongodb as mongo_connected
     
-    if mongo_connected:
-        # Use MongoDB search
-        query_embeddings = await get_embeddings([query])
-        results = search_similar_chunks(query_embeddings[0], document_id, k)
-        return results
-    else:
-        # Use ChromaDB fallback
-        if not chroma_collection:
-            return []
-        
-        query_embeddings = await get_embeddings([query])
-        results = chroma_collection.query(
-            query_embeddings=query_embeddings,
-            n_results=k
-        )
-        return results["documents"][0] if results["documents"] else []
+    if not mongo_connected:
+        raise Exception("MongoDB connection required for retrieving embeddings")
+    
+    # Use MongoDB search
+    query_embeddings = await get_embeddings([query])
+    results = search_similar_chunks(query_embeddings[0], document_id, k)
+    return results
 
 async def generate_question_from_document() -> str:
     """Generate a question based on document content using GPT"""
@@ -243,12 +248,23 @@ async def evaluate_answer(question: str, user_answer: str, document_id: str) -> 
     )
 
 @app.post("/upload", response_model=DocumentResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), user_id: str = Form("")):
     """Upload and process document (PDF or TXT) - Creates embeddings for chat/tutor use"""
     global document_text, document_chunks, current_document_id
     
     try:
-        print(f"📄 Starting document upload: {file.filename}")
+        # Check MongoDB connection first
+        from mongodb_client import use_mongodb as mongo_connected
+        if not mongo_connected:
+            raise HTTPException(
+                status_code=503, 
+                detail="Database service unavailable. Please ensure MongoDB is connected and try again."
+            )
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        print(f"📄 Starting document upload: {file.filename} for user: {user_id}")
         
         # Step 1: Clear ALL previous document data
         document_text = ""
@@ -270,16 +286,16 @@ async def upload_document(file: UploadFile = File(...)):
         if not document_text.strip():
             raise HTTPException(status_code=400, detail="No text could be extracted from the document")
         
-        # Step 3: Generate document ID and store metadata
+        # Step 3: Generate document ID and store metadata (without content)
         current_document_id = str(uuid.uuid4())
-        store_document_metadata(current_document_id, file.filename, len(content), document_text)
+        store_document_metadata(current_document_id, file.filename, len(content), user_id)
         print(f"📝 Document metadata stored with ID: {current_document_id}")
         
         # Step 4: Chunk the document for processing
         document_chunks = chunk_document(document_text)
         print(f"✂️ Document chunked into {len(document_chunks)} pieces")
         
-        # Step 5: Create embeddings and store in MongoDB
+        # Step 5: Create embeddings and store in MongoDB (only embeddings, not content)
         print("🔄 Creating embeddings... (this may take a moment)")
         await setup_vector_db(current_document_id, document_chunks)
         
@@ -294,7 +310,10 @@ async def upload_document(file: UploadFile = File(...)):
         
     except Exception as e:
         # If there's an error, make sure we clear the data
+        import traceback
+        error_details = traceback.format_exc()
         print(f"❌ Error processing document: {str(e)}")
+        print(f"Full traceback:\n{error_details}")
         document_text = ""
         document_chunks = []
         current_document_id = None
@@ -341,14 +360,17 @@ async def chat_with_document(request: ChatRequest):
 
 # Chat History Endpoints
 @app.post("/chat/session/create")
-async def create_new_chat_session():
+async def create_new_chat_session(user_id: str = ""):
     """Create a new chat session"""
     if not current_document_id:
         raise HTTPException(status_code=400, detail="No document uploaded")
     
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID is required")
+    
     try:
-        session_id = create_chat_session(current_document_id)
-        return {"session_id": session_id, "document_id": current_document_id}
+        session_id = create_chat_session(current_document_id, user_id)
+        return {"session_id": session_id, "document_id": current_document_id, "user_id": user_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating session: {str(e)}")
 
@@ -717,27 +739,78 @@ async def synthesize_speech(request: dict):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    from mongodb_client import get_db
-    
-    # Check MongoDB connection
-    mongodb_connected = False
-    try:
-        db = get_db()
-        if db is not None:
-            mongodb_connected = True
-    except:
-        pass
+    from mongodb_client import use_mongodb as mongodb_connected
     
     return {
-        "status": "healthy",
+        "status": "healthy" if mongodb_connected else "degraded",
         "document_loaded": bool(document_text),
         "chunks_count": len(document_chunks) if document_chunks else 0,
         "document_id": current_document_id,
-        "mongodb_connected": mongodb_connected
+        "mongodb_connected": mongodb_connected,
+        "message": "MongoDB connection required" if not mongodb_connected else "All systems operational"
     }
+
+# Authentication Endpoints
+@app.post("/auth/register")
+async def register(request: RegisterRequest):
+    """Register a new user"""
+    try:
+        # Ensure MongoDB is connected
+        from mongodb_client import use_mongodb, connect_mongodb
+        if not use_mongodb:
+            print("⚠️ MongoDB not connected, attempting to reconnect...")
+            if not connect_mongodb():
+                raise HTTPException(
+                    status_code=503, 
+                    detail="Database service unavailable. Please try again in a moment."
+                )
+        
+        user = create_user(
+            email=request.email,
+            password=request.password,
+            first_name=request.first_name,
+            last_name=request.last_name
+        )
+        return {"success": True, "user": user, "message": "User registered successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/auth/login")
+async def login(request: LoginRequest):
+    """Login user"""
+    try:
+        # Ensure MongoDB is connected
+        from mongodb_client import use_mongodb, connect_mongodb
+        if not use_mongodb:
+            print("⚠️ MongoDB not connected, attempting to reconnect...")
+            if not connect_mongodb():
+                raise HTTPException(
+                    status_code=503, 
+                    detail="Database service unavailable. Please try again in a moment."
+                )
+        
+        user = authenticate_user(request.email, request.password)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        return {"success": True, "user": user, "message": "Login successful"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/auth/user/{user_id}")
+async def get_user(user_id: str):
+    """Get user by ID"""
+    try:
+        user = get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"success": True, "user": user}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    # Ensure clean start - ready for new document upload
-    ensure_clean_start()
     uvicorn.run(app, host="0.0.0.0", port=8000)

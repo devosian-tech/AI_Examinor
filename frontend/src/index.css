@@ -3,6 +3,11 @@
 @tailwind utilities;
 
 @layer base {
+  /* Global scaling to 80% - makes everything smaller at 100% zoom */
+  html {
+    font-size: 80%;
+  }
+  
   body {
     margin: 0;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -82,4 +87,78 @@
 
 body {
   @apply font-sans bg-white text-gray-900;
+}
+
+/* AUTH PAGE */
+
+.auth-container {
+  display: flex;
+  height: 100vh;
+  background: #1e1b2e;
+  font-family: 'Inter', sans-serif;
+}
+
+.auth-left {
+  width: 50%;
+  position: relative;
+  overflow: hidden;
+}
+
+.slider-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation: fade 1s ease-in-out;
+}
+
+@keyframes fade {
+  from {opacity:0.4}
+  to {opacity:1}
+}
+
+.overlay-text {
+  position: absolute;
+  bottom: 50px;
+  left: 40px;
+  color: white;
+}
+
+.auth-right {
+  width: 50%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 80px;
+  color: white;
+}
+
+.auth-right input {
+  width: 100%;
+  padding: 14px;
+  margin: 10px 0;
+  background: #2c2845;
+  border: none;
+  border-radius: 6px;
+  color: white;
+}
+
+.name-group {
+  display: flex;
+  gap: 10px;
+}
+
+.primary-btn {
+  margin-top: 20px;
+  padding: 14px;
+  background: #6c5ce7;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+}
+
+.toggle span {
+  color: #a29bfe;
+  cursor: pointer;
+  margin-left: 5px;
 }

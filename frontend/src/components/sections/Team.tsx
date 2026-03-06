@@ -3,10 +3,10 @@ import { fadeInUp, staggerContainer } from '../../utils/animations';
 
 const Team = () => {
   const teamMembers = [
-    { name: "John Doe", role: "AI Engineer", image: "team1.png" },
-    { name: "Alice Brown", role: "UX Designer", image: "team2.jpeg" },
-    { name: "Peter Jones", role: "Lead Developer", image: "team3.jpeg" },
-    { name: "Jane Smith", role: "Product Manager", image: "team4.jpeg" },
+    { name: "Harshit Sharma", role: "AI Engineer", image: "team1.png" },
+    { name: "Tanmay Pandey", role: "UX Designer", image: "team2.jpeg" },
+    { name: "Ujjwal Chaturvedi", role: "Lead Developer", image: "team3.jpeg" },
+    { name: "Swayam Gupta", role: "Product Manager", image: "team4.jpeg" },
   ];
 
   return (

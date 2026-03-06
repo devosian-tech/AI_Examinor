@@ -54,8 +54,16 @@ const DocumentUpload = ({ onUploadSuccess }) => {
     setUploading(true);
     setError('');
 
+    const userId = localStorage.getItem('userId');
+    if (!userId) {
+      setError('Please login first');
+      setUploading(false);
+      return;
+    }
+
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('user_id', userId);
 
     try {
       const response = await axios.post('http://localhost:8000/upload', formData, {

@@ -50,11 +50,34 @@ async def evaluate_tutor_answer(question: str, user_answer: str, context: str) -
     user_said_dont_know = any(phrase in user_answer.lower() for phrase in dont_know_phrases)
     
     if user_said_dont_know:
+        # Generate a proper answer from the context
+        answer_prompt = f"""Based on the reference material below, provide a clear and complete answer to this question.
+
+Question: {question}
+Reference Material: {context}
+
+Provide a comprehensive answer that directly addresses the question using information from the reference material. Make it educational and easy to understand."""
+        
+        try:
+            answer_response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a helpful tutor providing clear answers based on document content."},
+                    {"role": "user", "content": answer_prompt}
+                ],
+                max_tokens=500,
+                temperature=0.7
+            )
+            proper_answer = answer_response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Answer generation error: {e}")
+            proper_answer = f"Based on the document: {context[:500]}"
+        
         return {
             "score": 1,
             "correct_points": ["It's okay to not know something - that's how we learn!"],
-            "missing_points": ["Try reading the document section again and give it your best guess."],
-            "improved_answer": "Take a moment to review the relevant section in the document, then try answering in your own words!"
+            "missing_points": ["Try reading the document section and understanding the key concepts."],
+            "improved_answer": proper_answer
         }
     
     prompt = f"""You are a friendly tutor evaluating a student's answer. Provide structured feedback.

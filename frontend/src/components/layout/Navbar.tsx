@@ -15,7 +15,7 @@ const Navbar = () => {
   ];
 
   const handleGetStarted = () => {
-    navigate('/upload');
+    navigate('/auth');
   };
 
   return (

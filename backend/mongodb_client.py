@@ -1,7 +1,6 @@
 """
-MongoDB Client Module with ChromaDB Fallback
+MongoDB Client Module
 Handles MongoDB Atlas connection and operations for vector embeddings and chat history
-Falls back to ChromaDB if MongoDB connection fails
 """
 
 import os
@@ -23,62 +22,155 @@ db = None
 use_mongodb = False
 
 def connect_mongodb():
-    """Initialize MongoDB connection with SSL workaround"""
     global client, db, use_mongodb
+    
     try:
-        # Create SSL context with legacy support for OpenSSL 3.x
-        import ssl
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        if not MONGODB_URI:
+            print("❌ MongoDB URI not found in environment variables")
+            use_mongodb = False
+            return False
         
-        # Connect with custom SSL context
+        print(f"🔄 Connecting to MongoDB Atlas...")
+        print(f"   URI length: {len(MONGODB_URI)} characters")
+        
+        import certifi
+        
+        # Configure TLS settings to handle SSL properly
         client = MongoClient(
             MONGODB_URI,
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000,
             tls=True,
             tlsAllowInvalidCertificates=True,
-            tlsAllowInvalidHostnames=True,
-            serverSelectionTimeoutMS=10000,
-            connectTimeoutMS=10000
+            tlsCAFile=certifi.where()
         )
+
         # Test connection
-        client.admin.command('ping')
+        result = client.admin.command('ping')
+        print(f"   Ping result: {result}")
+
         db = client['document_learning']
         use_mongodb = True
-        print("✅ MongoDB connected successfully - using MongoDB for storage")
+
+        print("✅ MongoDB connected successfully")
         
         # Create indexes
+        print("🔄 Creating database indexes...")
         db.embeddings.create_index([("document_id", 1)])
         db.chat_history.create_index([("session_id", 1)])
         db.documents.create_index([("document_id", 1)])
+        try:
+            db.users.create_index([("email", 1)], unique=True)
+        except Exception as idx_error:
+            # Index might already exist
+            print(f"   Note: {idx_error}")
         
+        print("✅ Database indexes ready")
+
         return True
+
     except Exception as e:
-        print(f"⚠️ MongoDB connection failed - using ChromaDB fallback")
+        print(f"❌ MongoDB connection failed: {type(e).__name__}")
+        print(f"   Error details: {str(e)}")
         use_mongodb = False
         return False
 
 def get_db():
-    """Get database instance or return None if using ChromaDB"""
+    """Get database instance"""
     global use_mongodb
     if not use_mongodb:
-        return None
+        raise Exception("MongoDB not connected")
     if db is None:
         connect_mongodb()
     return db
 
-# Document operations
-def store_document_metadata(document_id: str, filename: str, file_size: int, content: str):
-    """Store document metadata (MongoDB only, skipped for ChromaDB)"""
+# User operations
+def create_user(email: str, password: str, first_name: str, last_name: str) -> Dict[str, Any]:
+    """Create a new user"""
     database = get_db()
-    if database is None:
-        return document_id  # Skip for ChromaDB
+    
+    # Check if user already exists
+    existing_user = database.users.find_one({"email": email})
+    if existing_user:
+        raise Exception("User with this email already exists")
+    
+    import hashlib
+    user_id = str(uuid.uuid4())
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    
+    user = {
+        "user_id": user_id,
+        "email": email,
+        "password_hash": password_hash,
+        "first_name": first_name,
+        "last_name": last_name,
+        "created_at": datetime.utcnow(),
+        "last_login": datetime.utcnow()
+    }
+    
+    database.users.insert_one(user)
+    database.users.create_index([("email", 1)], unique=True)
+    
+    return {
+        "user_id": user_id,
+        "email": email,
+        "first_name": first_name,
+        "last_name": last_name
+    }
+
+def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
+    """Authenticate user and return user data"""
+    database = get_db()
+    
+    import hashlib
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    
+    user = database.users.find_one({
+        "email": email,
+        "password_hash": password_hash
+    })
+    
+    if not user:
+        return None
+    
+    # Update last login
+    database.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"last_login": datetime.utcnow()}}
+    )
+    
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "first_name": user["first_name"],
+        "last_name": user["last_name"]
+    }
+
+def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get user by ID"""
+    database = get_db()
+    
+    user = database.users.find_one({"user_id": user_id})
+    if not user:
+        return None
+    
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "first_name": user["first_name"],
+        "last_name": user["last_name"]
+    }
+
+# Document operations
+def store_document_metadata(document_id: str, filename: str, file_size: int, user_id: str):
+    """Store document metadata"""
+    database = get_db()
     
     doc = {
         "document_id": document_id,
+        "user_id": user_id,
         "filename": filename,
         "file_size": file_size,
-        "content_length": len(content),
         "uploaded_at": datetime.utcnow(),
         "status": "processed"
     }
@@ -87,10 +179,8 @@ def store_document_metadata(document_id: str, filename: str, file_size: int, con
 
 # Vector embedding operations
 def store_embeddings(document_id: str, chunks: List[Dict[str, Any]], embeddings: List[List[float]]):
-    """Store document chunks with their embeddings (returns count, actual storage handled by main.py)"""
+    """Store document chunks with their embeddings in MongoDB"""
     database = get_db()
-    if database is None:
-        return len(embeddings)  # ChromaDB handles storage in main.py
     
     # Clear existing embeddings for this document
     database.embeddings.delete_many({"document_id": document_id})
@@ -113,10 +203,8 @@ def store_embeddings(document_id: str, chunks: List[Dict[str, Any]], embeddings:
     return len(embedding_docs)
 
 def search_similar_chunks(query_embedding: List[float], document_id: str, k: int = 5) -> List[str]:
-    """Search for similar chunks using cosine similarity (returns empty for ChromaDB fallback)"""
+    """Search for similar chunks using cosine similarity"""
     database = get_db()
-    if database is None:
-        return []  # ChromaDB handles search in main.py
     
     # Get all embeddings for the document
     embeddings_cursor = database.embeddings.find({"document_id": document_id})
@@ -145,17 +233,15 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     return dot_product / (magnitude1 * magnitude2)
 
 # Chat history operations
-def create_chat_session(document_id: str) -> str:
-    """Create a new chat session (in-memory for ChromaDB fallback)"""
+def create_chat_session(document_id: str, user_id: str) -> str:
+    """Create a new chat session"""
     database = get_db()
     session_id = str(uuid.uuid4())
-    
-    if database is None:
-        return session_id  # Return session ID but don't store
     
     session = {
         "session_id": session_id,
         "document_id": document_id,
+        "user_id": user_id,
         "title": "New Chat",  # Default title
         "messages": [],
         "created_at": datetime.utcnow(),
@@ -168,8 +254,6 @@ def create_chat_session(document_id: str) -> str:
 def add_message_to_session(session_id: str, role: str, content: str, sources: Optional[List[str]] = None):
     """Add a message to chat session and update title if first user message"""
     database = get_db()
-    if database is None:
-        return  # Skip for ChromaDB
     
     message = {
         "role": role,
@@ -200,8 +284,6 @@ def add_message_to_session(session_id: str, role: str, content: str, sources: Op
 def get_chat_history(session_id: str) -> List[Dict[str, Any]]:
     """Get chat history for a session"""
     database = get_db()
-    if database is None:
-        return []  # No history for ChromaDB
     
     session = database.chat_history.find_one({"session_id": session_id})
     
@@ -212,8 +294,6 @@ def get_chat_history(session_id: str) -> List[Dict[str, Any]]:
 def get_all_sessions(document_id: str) -> List[Dict[str, Any]]:
     """Get all chat sessions for a document with titles"""
     database = get_db()
-    if database is None:
-        return []  # No sessions for ChromaDB
     
     sessions = database.chat_history.find(
         {"document_id": document_id},
@@ -225,16 +305,12 @@ def get_all_sessions(document_id: str) -> List[Dict[str, Any]]:
 def delete_session(session_id: str):
     """Delete a chat session"""
     database = get_db()
-    if database is None:
-        return  # Skip for ChromaDB
     
     database.chat_history.delete_one({"session_id": session_id})
 
 def clear_all_data():
     """Clear all data from MongoDB"""
     database = get_db()
-    if database is None:
-        return  # Skip for ChromaDB
     
     database.embeddings.delete_many({})
     database.chat_history.delete_many({})

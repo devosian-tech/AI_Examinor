@@ -77,9 +77,17 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
     fetchProgress();
 
     return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-      if (audioRef.current) audioRef.current.pause();
-      synthRef.current.cancel();
+      // Cleanup on unmount
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (synthRef.current) {
+        synthRef.current.cancel();
+      }
     };
   }, []);
 
@@ -88,35 +96,65 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
   };
 
   const speak = (text) => {
+    // Cancel any ongoing speech first
+    stopSpeaking();
+    
     setIsSpeaking(true);
+    
+    // Try server-side TTS first
     axios.post('http://localhost:8000/voice/synthesize', { text })
       .then(res => {
         if (res.data.audio) {
+          // Use server TTS
           const audio = new Audio(`data:audio/mp3;base64,${res.data.audio}`);
           audioRef.current = audio;
-          audio.play();
+          
+          audio.onerror = () => {
+            // If audio fails to play, fallback to browser TTS
+            audioRef.current = null;
+            useBrowserTTS(text);
+          };
+          
           audio.onended = () => {
             audioRef.current = null;
             setIsSpeaking(false);
             setTimeout(() => startListening(), 500);
           };
+          
+          audio.play().catch(() => {
+            // If play fails, use browser TTS
+            audioRef.current = null;
+            useBrowserTTS(text);
+          });
         } else {
+          // No audio returned, use browser TTS
           useBrowserTTS(text);
         }
       })
-      .catch(() => useBrowserTTS(text));
+      .catch(() => {
+        // Server error, use browser TTS
+        useBrowserTTS(text);
+      });
   };
 
   const useBrowserTTS = (text) => {
+    // Make sure to cancel any existing speech
     synthRef.current.cancel();
+    
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.9;
     utterance.pitch = 1;
     utterance.volume = 1;
+    
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+    };
+    
     utterance.onend = () => {
       setIsSpeaking(false);
       setTimeout(() => startListening(), 500);
     };
+    
     synthRef.current.speak(utterance);
   };
 
@@ -136,11 +174,18 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
   };
 
   const stopSpeaking = () => {
+    // Stop audio element if playing
     if (audioRef.current) {
       audioRef.current.pause();
+      audioRef.current.currentTime = 0;
       audioRef.current = null;
     }
-    synthRef.current.cancel();
+    
+    // Cancel browser speech synthesis
+    if (synthRef.current) {
+      synthRef.current.cancel();
+    }
+    
     setIsSpeaking(false);
   };
 
@@ -223,30 +268,46 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
             </div>
           </div>
           
-          {progress && progress.questions_asked > 0 && (
-            <div className="flex items-center gap-8">
-              <div className="text-right">
-                <div className="text-xs text-zinc-500 mb-1">Accuracy</div>
-                <div className="text-2xl font-bold text-white">{progress.accuracy.toFixed(0)}%</div>
+          <div className="flex items-center gap-6">
+            {progress && progress.questions_asked > 0 && (
+              <div className="flex items-center gap-8">
+                <div className="text-right">
+                  <div className="text-xs text-zinc-500 mb-1">Accuracy</div>
+                  <div className="text-2xl font-bold text-white">{progress.accuracy.toFixed(0)}%</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-zinc-500 mb-1">Score</div>
+                  <div className="text-2xl font-bold text-white">{progress.correct_answers}/{progress.questions_asked}</div>
+                </div>
               </div>
-              <div className="text-right">
-                <div className="text-xs text-zinc-500 mb-1">Score</div>
-                <div className="text-2xl font-bold text-white">{progress.correct_answers}/{progress.questions_asked}</div>
-              </div>
+            )}
+            
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleReset}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+              >
+                Reset
+              </button>
+              <button
+                onClick={onNewDocument}
+                className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm text-white transition-all"
+              >
+                New Document
+              </button>
+              <button
+                onClick={onBack}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+              >
+                Exit
+              </button>
             </div>
-          )}
-          
-          <button
-            onClick={onBack}
-            className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
-          >
-            Exit
-          </button>
+          </div>
         </div>
       </div>
 
       {/* Main content - centered and minimal */}
-      <div className="absolute inset-0 flex items-center justify-center pt-20 pb-24">
+      <div className="absolute inset-0 flex items-center justify-center pt-20 pb-8">
         <div className="relative z-10 flex flex-col items-center max-w-4xl w-full px-8">
           
           {/* AI Core - clean and sophisticated */}
@@ -374,24 +435,6 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
               </button>
             )}
           </div>
-        </div>
-      </div>
-
-      {/* Bottom bar - minimal */}
-      <div className="absolute bottom-0 left-0 right-0 z-50 border-t border-white/5">
-        <div className="max-w-7xl mx-auto px-8 py-6 flex gap-4 justify-center">
-          <button
-            onClick={handleReset}
-            className="px-6 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
-          >
-            Reset
-          </button>
-          <button
-            onClick={onNewDocument}
-            className="px-6 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm text-white transition-all"
-          >
-            New Document
-          </button>
         </div>
       </div>
 

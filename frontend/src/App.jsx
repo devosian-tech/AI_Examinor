@@ -1,10 +1,22 @@
-import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useNavigate, Navigate } from 'react-router-dom';
 import Home from './components/Home';
+import Auth from './components/Auth';
 import DocumentUpload from './components/DocumentUpload';
 import ModeSelector from './components/ModeSelector';
 import ChatMode from './components/ChatMode';
 import TutorMode from './components/TutorMode';
 import ConversationalTutor from './components/ConversationalTutor';
+
+// Protected Route Component
+function ProtectedRoute({ children }) {
+  const userId = localStorage.getItem('userId');
+  
+  if (!userId) {
+    return <Navigate to="/auth" replace />;
+  }
+  
+  return <>{children}</>;
+}
 
 function UploadPage() {
   const navigate = useNavigate();
@@ -175,11 +187,12 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/upload" element={<UploadPage />} />
-        <Route path="/modes" element={<ModeSelectorPage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/tutor" element={<TutorPage />} />
-        <Route path="/voice-tutor" element={<VoiceTutorPage />} />
+        <Route path="/auth" element={<Auth />} />
+        <Route path="/upload" element={<ProtectedRoute><UploadPage /></ProtectedRoute>} />
+        <Route path="/modes" element={<ProtectedRoute><ModeSelectorPage /></ProtectedRoute>} />
+        <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+        <Route path="/tutor" element={<ProtectedRoute><TutorPage /></ProtectedRoute>} />
+        <Route path="/voice-tutor" element={<ProtectedRoute><VoiceTutorPage /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   );

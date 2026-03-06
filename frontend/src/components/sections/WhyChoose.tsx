@@ -52,6 +52,8 @@ const WhyChoose = () => {
             viewport={{ once: true }}
             transition={{ delay: 0.5, duration: 0.5 }}
           >
+            {/* App store images temporarily disabled - add images to public/images/ */}
+            {/* 
             <motion.img
               src="/images/google-play.png"
               alt="Google Play"
@@ -66,6 +68,7 @@ const WhyChoose = () => {
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.95 }}
             />
+            */}
           </motion.div>
         </motion.div>
 
