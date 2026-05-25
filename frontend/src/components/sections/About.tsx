@@ -47,7 +47,7 @@ const About = () => {
           </motion.h2>
 
           <motion.p 
-            className="text-[#666666] mb-8 max-w-lg"
+            className="text-[black] mb-8 max-w-lg"
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
