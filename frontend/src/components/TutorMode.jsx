@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import API_URL from '../config/api';
 
 const TutorMode = ({ onBack, onNewDocument }) => {
   const [currentQuestion, setCurrentQuestion] = useState('');
@@ -15,7 +16,7 @@ const TutorMode = ({ onBack, onNewDocument }) => {
 
     try {
       // Add timestamp to prevent caching
-      const response = await axios.get(`http://localhost:8000/tutor/question?t=${Date.now()}`);
+      const response = await axios.get(`${API_URL}/tutor/question?t=${Date.now()}`);
       setCurrentQuestion(response.data.question);
     } catch (error) {
       setCurrentQuestion('Error loading question. Please try again.');
@@ -30,7 +31,7 @@ const TutorMode = ({ onBack, onNewDocument }) => {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:8000/tutor/evaluate', {
+      const response = await axios.post(`${API_URL}/tutor/evaluate`, {
         question: currentQuestion,
         user_answer: userAnswer
       });

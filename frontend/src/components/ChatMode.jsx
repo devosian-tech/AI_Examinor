@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import API_URL from '../config/api';
 
 const ChatMode = ({ onBack, onNewDocument }) => {
   const [messages, setMessages] = useState([]);
@@ -15,7 +16,7 @@ const ChatMode = ({ onBack, onNewDocument }) => {
     const initializeChat = async () => {
       await loadSessions();
       // Only create a new session if there are no existing sessions
-      const response = await axios.get('http://localhost:8000/chat/sessions');
+      const response = await axios.get(`${API_URL}/chat/sessions`);
       const existingSessions = response.data.sessions || [];
       
       if (existingSessions.length === 0) {
@@ -37,7 +38,7 @@ const ChatMode = ({ onBack, onNewDocument }) => {
     try {
       setCreatingSession(true);
       const userId = localStorage.getItem('userId');
-      const response = await axios.post(`http://localhost:8000/chat/session/create?user_id=${userId}`);
+      const response = await axios.post(`${API_URL}/chat/session/create?user_id=${userId}`);
       setSessionId(response.data.session_id);
       setMessages([]);
       await loadSessions(); // Refresh sessions list
@@ -50,7 +51,7 @@ const ChatMode = ({ onBack, onNewDocument }) => {
 
   const loadSessions = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/chat/sessions');
+      const response = await axios.get(`${API_URL}/chat/sessions`);
       setSessions(response.data.sessions || []);
     } catch (error) {
       console.error('Error loading sessions:', error);
@@ -59,7 +60,7 @@ const ChatMode = ({ onBack, onNewDocument }) => {
 
   const loadSessionHistory = async (sid) => {
     try {
-      const response = await axios.get(`http://localhost:8000/chat/session/${sid}/history`);
+      const response = await axios.get(`${API_URL}/chat/session/${sid}/history`);
       const history = response.data.messages || [];
       
       // Convert history to message format
@@ -79,7 +80,7 @@ const ChatMode = ({ onBack, onNewDocument }) => {
   const deleteSession = async (sid, e) => {
     e.stopPropagation();
     try {
-      await axios.delete(`http://localhost:8000/chat/session/${sid}`);
+      await axios.delete(`${API_URL}/chat/session/${sid}`);
       
       // If deleted session was active, create new one
       if (sid === sessionId) {
@@ -101,7 +102,7 @@ const ChatMode = ({ onBack, onNewDocument }) => {
     setLoading(true);
 
     try {
-      const response = await axios.post(`http://localhost:8000/chat/session/${sessionId}/message`, {
+      const response = await axios.post(`${API_URL}/chat/session/${sessionId}/message`, {
         message: inputMessage
       });
 

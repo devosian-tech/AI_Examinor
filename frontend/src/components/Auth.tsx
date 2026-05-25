@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import '../components/index.css';
+import API_URL from '../config/api';
 
 const images = [
   "/images/image-1.jpeg",
@@ -8,8 +9,6 @@ const images = [
   "/images/image-3.jpg",
   "/images/image-4.jpg"
 ];
-
-const API_URL = "http://localhost:8000";
 
 export default function Auth() {
   const [index, setIndex] = useState(0);

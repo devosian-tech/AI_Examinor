@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import API_URL from '../config/api';
 
 const ConversationalTutor = ({ onBack, onNewDocument }) => {
   const [sessionId] = useState(() => `session_${Date.now()}`);
@@ -102,7 +103,7 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
     setIsSpeaking(true);
     
     // Try server-side TTS first
-    axios.post('http://localhost:8000/voice/synthesize', { text })
+    axios.post(`${API_URL}/voice/synthesize`, { text })
       .then(res => {
         if (res.data.audio) {
           // Use server TTS
@@ -191,7 +192,7 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
 
   const fetchProgress = async () => {
     try {
-      const res = await axios.get(`http://localhost:8000/conversational/progress/${sessionId}`);
+      const res = await axios.get(`${API_URL}/conversational/progress/${sessionId}`);
       setProgress(res.data);
     } catch (err) {
       console.error('Error fetching progress:', err);
@@ -209,7 +210,7 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
 
     try {
       if (text.toLowerCase().includes('quiz me') || text.toLowerCase().includes('test me') || text.toLowerCase().includes('practice')) {
-        const res = await axios.post('http://localhost:8000/conversational/question', {
+        const res = await axios.post(`${API_URL}/conversational/question`, {
           session_id: sessionId,
           topic: text.replace(/quiz me|test me|practice/gi, '').trim() || null
         });
@@ -217,7 +218,7 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
         speak(res.data.question);
         setProgress(res.data.session_info);
       } else {
-        const res = await axios.post('http://localhost:8000/conversational/chat', {
+        const res = await axios.post(`${API_URL}/conversational/chat`, {
           session_id: sessionId,
           message: text
         });
@@ -235,7 +236,7 @@ const ConversationalTutor = ({ onBack, onNewDocument }) => {
 
   const handleReset = async () => {
     try {
-      await axios.post('http://localhost:8000/conversational/reset', { session_id: sessionId });
+      await axios.post(`${API_URL}/conversational/reset`, { session_id: sessionId });
       setMessages([]);
       addMessage('assistant', "Session reset! What would you like to study?");
       fetchProgress();

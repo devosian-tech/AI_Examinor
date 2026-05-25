@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
+import API_URL from '../config/api';
 
 const DocumentUpload = ({ onUploadSuccess }) => {
   const [file, setFile] = useState(null);
@@ -66,7 +67,7 @@ const DocumentUpload = ({ onUploadSuccess }) => {
     formData.append('user_id', userId);
 
     try {
-      const response = await axios.post('http://localhost:8000/upload', formData, {
+      const response = await axios.post(`${API_URL}/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },

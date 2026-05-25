@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
+import API_URL from '../config/api';
 
 const VoiceMode = ({ onBack, onNewDocument }) => {
   const [isListening, setIsListening] = useState(false);
@@ -84,7 +85,7 @@ const VoiceMode = ({ onBack, onNewDocument }) => {
     try {
       if (mode === 'chat') {
         // Voice chat mode
-        const res = await axios.post('http://localhost:8000/voice/chat', {
+        const res = await axios.post(`${API_URL}/voice/chat`, {
           message: text,
           mode: 'chat'
         });
@@ -98,7 +99,7 @@ const VoiceMode = ({ onBack, onNewDocument }) => {
           return;
         }
 
-        const res = await axios.post('http://localhost:8000/voice/tutor/evaluate', {
+        const res = await axios.post(`${API_URL}/voice/tutor/evaluate`, {
           question: currentQuestion,
           user_answer: text
         });
@@ -123,7 +124,7 @@ const VoiceMode = ({ onBack, onNewDocument }) => {
     setResponse('');
 
     try {
-      const res = await axios.get('http://localhost:8000/voice/tutor/question');
+      const res = await axios.get(`${API_URL}/voice/tutor/question`);
       setCurrentQuestion(res.data.question);
       speak(res.data.audio_text);
     } catch (err) {
