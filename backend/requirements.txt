@@ -36,7 +36,6 @@ cryptography>=46.0.0
 
 # Voice Features
 edge-tts>=7.2.0
-pygame>=2.6.0
 
 # HTTP & Networking
 requests>=2.32.0

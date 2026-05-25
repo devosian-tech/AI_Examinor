@@ -2,14 +2,12 @@
 Voice Models Module
 Handles speech-to-text and text-to-speech
 - Speech-to-text: Groq Whisper Large V3
-- Text-to-speech: Microsoft Edge TTS with pygame
+- Text-to-speech: Microsoft Edge TTS
 """
 
 import os
 import asyncio
 import edge_tts
-import pygame
-import uuid
 from io import BytesIO
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -27,8 +25,6 @@ VOICE = "en-IN-PrabhatNeural"   # Indian male neural voice
 # en-IN-NeerjaNeural  (Indian female)
 # en-US-GuyNeural
 # en-GB-RyanNeural
-
-pygame.mixer.init()
 
 async def speech_to_text(audio_file_path: str) -> str:
     """
@@ -81,18 +77,6 @@ async def speech_to_text_from_bytes(audio_bytes: bytes, filename: str = "audio.w
 async def speak_async(text, filename):
     communicate = edge_tts.Communicate(text=text, voice=VOICE, rate="+20%")
     await communicate.save(filename)
-
-def speak(text):
-    if not text.strip():
-        return
-    filename = f"voice_{uuid.uuid4()}.mp3"
-    asyncio.run(speak_async(text, filename))
-    pygame.mixer.music.load(filename)
-    pygame.mixer.music.play()
-    while pygame.mixer.music.get_busy():
-        continue
-    pygame.mixer.music.unload()
-    os.remove(filename)
 
 async def text_to_speech(text: str) -> bytes:
     """
