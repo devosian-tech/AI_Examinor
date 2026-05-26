@@ -4,7 +4,12 @@
   publish = "dist"
 
 [[redirects]]
+  from = "/api/*"
+  to = "http://43.205.216.41:8000/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
-
